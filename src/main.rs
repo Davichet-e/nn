@@ -8,22 +8,22 @@ fn main() {
     let a: HiddenLayer<10, 20, 30> = HiddenLayer::new(ActivationFunction::GELU);
 }
 
-enum LossFunction {
-    Squared,
-    BinaryCE,
+enum LossOutputSetup {
+    SquaredReLU,
+    SquaredLinear,
 }
 
-impl LossFunction {
+impl LossOutputSetup {
     fn get(&self) -> fn(f64, f64) -> f64 {
         match self {
-            LossFunction::Squared => |x: f64, y: f64| 0.5 * (x - y).powi(2),
-            LossFunction::BinaryCE => |x: f64, y: f64| -y * x.ln() - (1f64-y)*(1f64-x).ln(),
+            LossOutputSetup::SquaredReLU => |x: f64, y: f64| 0.5 * (x - y).powi(2),
+            LossOutputSetup::BinaryCE => |x: f64, y: f64| -y * x.ln() - (1f64-y)*(1f64-x).ln(),
         }
     }
 
     fn get_delta_error(&self) -> fn(f64, f64) -> f64 {
         match self {
-            LossFunction::Squared => |x: f64, y: f64| x - y,
+            LossOutputSetup::Squared => |x: f64, y: f64| x - y,
         }
     }
 }
@@ -70,51 +70,50 @@ impl ActivationFunction {
     }
 }
 
-struct NN<const N_LAYERS: usize> {
+struct NN<const N_LAYERS: usize, const N_NEURONS_PER_LAYER: usize> {
     learning_rate: f64,
     input_layer: InputLayer,
-    hidden_layers: [Layer<>; N_LAYERS]
-
+    hidden_layers: [Layer<N_NEURONS_PER_LAYER>; N_LAYERS]
+    output_layer: OutputLayer,
 }
 
 /// B is the number
 #[derive(Copy, Clone)]
-struct Neuron<const N_WEIGHTS_BEFORE: usize, const N_WEIGHTS_AFTER: usize> {
-    weights_layer_before: [f64; N_WEIGHTS_BEFORE],
-    weights_layer_after: [f64; N_WEIGHTS_AFTER],
+struct Neuron<const LENGTH: usize> {
+    weights_layer_before: [f64; LENGTH],
+    weights_layer_after: [f64; LENGTH],
     bias: f64,
 }
 
-trait Layer<const LENGTH: usize, const N_WEIGHTS_BEFORE: usize, const N_WEIGHTS_AFTER: usize> {
-    fn forward(&mut self, activations: [f64; N_WEIGHTS_BEFORE]);
-    fn backwards(&mut self, delta_errors: [f64; N_WEIGHTS_AFTER]) -> [f64; LENGTH];
-    fn calculate_delta_errors(&self, delta_errors: [f64; N_WEIGHTS_AFTER]) -> [f64; LENGTH];
+trait Layer<const LENGTH> {
+    fn forward(&mut self, activations: [f64; LENGTH]);
+    fn backwards(&mut self, delta_errors: [f64; LENGTH]) -> [f64; LENGTH];
+    fn calculate_delta_errors(&self, delta_errors: [f64; LENGTH]) -> [f64; LENGTH];
 }
 
 
-struct HiddenLayer<const LENGTH: usize, const N_WEIGHTS_BEFORE: usize, const N_WEIGHTS_AFTER: usize> {
-    neurons: [Neuron<N_WEIGHTS_BEFORE, N_WEIGHTS_AFTER>; LENGTH],
+struct HiddenLayer<const LENGTH: usize> {
+    neurons: [Neuron<LENGTH>; LENGTH],
     activations: [f64; LENGTH],
     activation_function: ActivationFunction,
 }
 
-impl<const LENGTH: usize, const N_WEIGHTS_BEFORE: usize, const N_WEIGHTS_AFTER: usize>
-HiddenLayer<LENGTH, N_WEIGHTS_BEFORE, N_WEIGHTS_AFTER>
+impl<const LENGTH: usize> HiddenLayer<LENGTH>
 {
      fn new(
         activation_function: ActivationFunction,
-    ) -> HiddenLayer<LENGTH, N_WEIGHTS_BEFORE, N_WEIGHTS_AFTER> {
+    ) -> HiddenLayer<LENGTH> {
         lazy_static! {
             static ref NORMAL: Normal = Normal::new(0.0, 0.01).unwrap();
         }
         let mut rng: ThreadRng = thread_rng();
         let mut neurons = [Neuron {
-            weights_layer_before: [0f64; N_WEIGHTS_BEFORE],
-            weights_layer_after: [0f64; N_WEIGHTS_AFTER],
+            weights_layer_before: [0f64; LENGTH],
+            weights_layer_after: [0f64; LENGTH],
             bias: 0f64,
         }; LENGTH];
         (0..LENGTH).for_each(|n| {
-            (0..N_WEIGHTS_BEFORE)
+            (0..LENGTH)
                 .for_each(|l| neurons[n].weights_layer_before[l] = NORMAL.sample(&mut rng))
         });
         HiddenLayer {
@@ -124,11 +123,10 @@ HiddenLayer<LENGTH, N_WEIGHTS_BEFORE, N_WEIGHTS_AFTER>
         }
     }
 }
-impl<const LENGTH: usize, const N_WEIGHTS_BEFORE: usize, const N_WEIGHTS_AFTER: usize>
-    Layer<LENGTH, N_WEIGHTS_BEFORE, N_WEIGHTS_AFTER> for HiddenLayer<LENGTH, N_WEIGHTS_BEFORE, N_WEIGHTS_AFTER>
-{
+impl<const LENGTH: usize>
+    Layer<LENGTH> for HiddenLayer<LENGTH> {
 
-    fn forward(&mut self, activations: [f64; N_WEIGHTS_BEFORE]) {
+    fn forward(&mut self, activations: [f64; LENGTH]) {
         let activation_function = self.activation_function.get();
         let mut a = [0f64; LENGTH];
         for (i, neuron) in self.neurons.iter().enumerate() {
@@ -144,7 +142,7 @@ impl<const LENGTH: usize, const N_WEIGHTS_BEFORE: usize, const N_WEIGHTS_AFTER: 
         self.activations = a;
     }
 
-    fn calculate_delta_errors(&self, delta_errors: [f64; N_WEIGHTS_AFTER]) -> [f64; LENGTH] {
+    fn calculate_delta_errors(&self, delta_errors: [f64; LENGTH]) -> [f64; LENGTH] {
         let derivative_activation_function = self.activation_function.get_derivative();
 
         let mut deltas = [0f64; LENGTH];
@@ -163,7 +161,7 @@ impl<const LENGTH: usize, const N_WEIGHTS_BEFORE: usize, const N_WEIGHTS_AFTER: 
         deltas
     }
 
-    fn backwards(&mut self, delta_errors: [f64; N_WEIGHTS_AFTER]) -> [f64; LENGTH] {
+    fn backwards(&mut self, delta_errors: [f64; LENGTH]) -> [f64; LENGTH] {
         let learning_rate = 0.01;
         for (i, neuron) in self.neurons.iter_mut().enumerate() {
             for (j, weight) in neuron.weights_layer_after.iter_mut().enumerate() {
@@ -174,18 +172,21 @@ impl<const LENGTH: usize, const N_WEIGHTS_BEFORE: usize, const N_WEIGHTS_AFTER: 
     }
 }
 
+struct InputLayer<const LENGTH: usize> {
 
-struct OutputLayer<const LENGTH: usize, const N_WEIGHTS_BEFORE: usize, const N_WEIGHTS_AFTER: usize>{
-    neurons: [Neuron<N_WEIGHTS_BEFORE, N_WEIGHTS_AFTER>; LENGTH],
+}
+
+struct OutputLayer<const LENGTH: usize>{
+    neurons: [Neuron<LENGTH>; LENGTH],
     outputs: [f64; LENGTH],
     output_function: ActivationFunction,
 }
 
-impl<const LENGTH: usize, const N_WEIGHTS_BEFORE: usize, const N_WEIGHTS_AFTER: usize>
-    Layer<LENGTH, N_WEIGHTS_BEFORE, N_WEIGHTS_AFTER> for OutputLayer<LENGTH, N_WEIGHTS_BEFORE, N_WEIGHTS_AFTER>
+impl<const LENGTH: usize>
+    Layer<LENGTH> for OutputLayer<LENGTH>
 {
 
-    fn forward(&mut self, activations: [f64; N_WEIGHTS_BEFORE]) {
+    fn forward(&mut self, activations: [f64; LENGTH]) {
         let output_function = self.output_function.get();
         let mut a = [0f64; LENGTH];
         for (i, neuron) in self.neurons.iter().enumerate() {
